@@ -1,0 +1,22 @@
+[Tue Sep 15 09:00:47 2026] procesador_tx[4821]: segfault at 0 ip 00007f3a2c1b4e10 sp 00007ffd9a3c8e40 error 4 in libtx.so[7f3a2c1a0000+2b000]
+
+[Tue Sep 15 09:01:22 2026] tx-worker-12[4899]: segfault at 18 ip 00007f3a2c1b7a42 sp 00007f3a1e7fbd20 error 6 in libtx.so[7f3a2c1a0000+2b000]
+
+[Tue Sep 15 09:02:05 2026] tx-worker-47[5133]: segfault at 7f1c8a7fdff8 ip 000055d1c2e4a3b1 sp 00007f1c8a7fe000 error 6 in procesador_tx[55d1c2e30000+40000]
+
+[Tue Sep 15 09:03:31 2026] procesador_tx invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=0
+[Tue Sep 15 09:03:31 2026] Out of memory: Killed process 5102 (procesador_tx) total-vm:31457280kB, anon-rss:15728640kB, file-rss:1024kB, shmem-rss:0kB, UID:1001 pgtables:30848kB oom_score_adj:0
+
+[Tue Sep 15 09:04:58 2026] BUG: unable to handle page fault for address: ffffc90000a1f000
+[Tue Sep 15 09:04:58 2026] #PF: supervisor read access in kernel mode
+[Tue Sep 15 09:04:58 2026] #PF: error_code(0x0000) - not-present page
+[Tue Sep 15 09:04:58 2026] Oops: 0000 [#1] PREEMPT SMP NOPTI
+[Tue Sep 15 09:04:58 2026] CPU: 3 PID: 0 Comm: swapper/3 Tainted: G           O       6.1.0-technova #1
+[Tue Sep 15 09:04:58 2026] RIP: 0010:nova_nic_rx_poll+0x4c/0x1a0 [nova_nic]
+[Tue Sep 15 09:04:58 2026] Call Trace:
+[Tue Sep 15 09:04:58 2026]  <IRQ>
+[Tue Sep 15 09:04:58 2026]  __napi_poll+0x2b/0x160
+[Tue Sep 15 09:04:58 2026]  net_rx_action+0x29e/0x360
+[Tue Sep 15 09:04:58 2026]  __do_softirq+0xc5/0x2c8
+[Tue Sep 15 09:04:58 2026]  </IRQ>
+[Tue Sep 15 09:04:58 2026] Kernel panic - not syncing: Fatal exception in interrupt
