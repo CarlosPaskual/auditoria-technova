@@ -39,6 +39,53 @@ Esta propuesta busca mantener la velocidad de los componentes esenciales y limit
 En conclusión, el objetivo no es cambiar de arquitectura simplemente porque el kernel sea monolítico, sino elegir una configuración que permita a TechNova seguir escalando, procesar las transacciones con rapidez y evitar que un fallo aislado termine afectando a todo el servidor.
 
 
+## 3. Interfaz de system calls
+
+### Cómo funciona una llamada al sistema
+
+Una llamada al sistema es la forma que tiene un programa de solicitar servicios al kernel. Un programa que se ejecuta en modo usuario no puede acceder directamente al hardware ni realizar determinadas operaciones protegidas. Para leer un archivo, enviar datos por la red o solicitar recursos, necesita recurrir al sistema operativo.
+
+El proceso funciona de la siguiente manera:
+
+1. El programa solicita una operación mediante una función, como `read()`, para leer datos.
+2. La biblioteca correspondiente prepara el número de la llamada al sistema y sus argumentos.
+3. El procesador ejecuta una instrucción especial, como `syscall` en x86-64, y pasa de modo usuario a modo kernel.
+4. El kernel comprueba los argumentos y los permisos, realiza la operación solicitada y prepara el resultado.
+5. El procesador vuelve a modo usuario y el programa continúa su ejecución.
+
+Este mecanismo permite que los programas utilicen los recursos del sistema sin tener acceso directo e ilimitado a ellos.
+
+### Impacto en el rendimiento y la estabilidad
+
+Las llamadas al sistema tienen un coste de ejecución. Cada entrada al kernel y vuelta al modo usuario implica un **cambio de modo**, además de guardar y recuperar parte del estado del procesador. Esto no significa que siempre se produzca un cambio de contexto, ya que el programa puede continuar ejecutándose después de la llamada sin ceder la CPU a otro proceso. Las medidas de seguridad del procesador y del sistema operativo también pueden añadir costes.
+
+En TechNova, esto podría ser relevante si el servicio procesa muchas transacciones y realiza operaciones de entrada y salida de forma repetida. Agrupar varias operaciones en una sola llamada o reducir las copias de datos puede ayudar a disminuir ese coste y mejorar el rendimiento. No obstante, los logs disponibles no demuestran que las llamadas al sistema sean la causa directa de los cuellos de botella; sería necesario medirlas para confirmarlo.
+
+Las llamadas al sistema también sirven como frontera de protección entre los programas y el kernel. Hay dos situaciones diferentes:
+
+- **Dirección inválida en una llamada al sistema:** si el programa pasa una dirección de memoria inválida, el kernel puede detectarlo al comprobar los argumentos y devolver un error, como `EFAULT`, sin que el proceso tenga que terminar.
+- **Acceso directo a una dirección inválida:** si el propio programa intenta acceder a una dirección que no tiene asignada correctamente, la MMU genera un *page fault*. Si el acceso es ilegal, el kernel envía `SIGSEGV` al proceso afectado.
+
+Esto encaja con los logs 1, 2 y 3: los errores de memoria afectan al proceso o al hilo correspondiente, pero no provocan por sí mismos la caída completa del servidor. El log 4 muestra otra situación: el OOM killer termina un proceso para intentar proteger al resto del sistema. En cambio, el log 5 es diferente, porque el fallo se produce dentro de un controlador que se ejecuta en modo kernel y termina provocando un *kernel panic*.
+
+### Propuesta de mejora
+
+Para mejorar el rendimiento de TechNova, se recomienda utilizar interfaces compatibles con POSIX y reducir las llamadas al sistema innecesarias mediante varias técnicas:
+
+- **Agrupar operaciones:** `readv()` y `writev()` permiten leer o escribir varios bloques de datos mediante una sola llamada al sistema, reduciendo el número de operaciones necesarias.
+- **Reducir las copias de datos:** `mmap()` permite mapear archivos en el espacio de direcciones del proceso, mientras que `sendfile()` puede transferir datos de un archivo a un socket sin copiarlos primero a un búfer del programa.
+- **Evitar entradas innecesarias al kernel:** en Linux, el mecanismo vDSO permite consultar determinados datos, como la hora, sin realizar una llamada al sistema tradicional en cada consulta.
+- **Usar operaciones asíncronas:** `io_uring`, disponible en Linux, permite gestionar muchas operaciones de entrada y salida mediante colas compartidas, reduciendo la necesidad de realizar llamadas al sistema repetidas.
+
+POSIX define una interfaz común para muchas funciones y operaciones de los sistemas operativos, lo que facilita desarrollar software compatible con diferentes sistemas. Sin embargo, es importante distinguir entre las funciones estándar y las específicas de cada plataforma. `readv()`, `writev()` y `mmap()` forman parte de POSIX, mientras que `sendfile()`, el vDSO e `io_uring` son tecnologías específicas de Linux o de su entorno. Por tanto, utilizar estas últimas puede requerir alternativas si TechNova decide migrar a otro sistema operativo.
+
+Existe un compromiso entre rendimiento y portabilidad. Las interfaces POSIX facilitan el desarrollo de software multiplataforma, mientras que las funciones específicas de Linux permiten aprovechar mecanismos propios de ese sistema. Una opción sería mantener una interfaz común y utilizar optimizaciones específicas cuando realmente aporten una mejora.
+
+Antes de realizar cambios, se recomienda medir el comportamiento del servicio. La herramienta `strace -c` permite resumir las llamadas al sistema realizadas por un proceso y el tiempo empleado en ellas, mientras que `perf` ayuda a identificar dónde se consume el tiempo de CPU. Con estos datos, TechNova podrá localizar los cuellos de botella y decidir qué optimizaciones son necesarias.
+
+En conclusión, se recomienda mantener una interfaz POSIX para facilitar la compatibilidad entre sistemas y aplicar técnicas de optimización en las operaciones que realmente lo necesiten. Así se podrá mejorar el rendimiento sin comprometer la estabilidad ni limitar innecesariamente las futuras opciones de migración.
+
+
 ## 4. Diagnóstico de excepciones
 ## Log 1 — 09:00:47
 
