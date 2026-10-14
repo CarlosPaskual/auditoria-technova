@@ -129,6 +129,64 @@ El sistema ha sufrido un *kernel panic* debido a un fallo en el controlador de r
 
 ---
 
+## 5. Protección de memoria y modo dual
+
+### Aclaración sobre el enunciado
+
+El enunciado solicita diseñar el aislamiento entre el modo real y el modo protegido. Sin embargo, estos conceptos corresponden a modos de funcionamiento del procesador y no deben confundirse con la separación de seguridad que utilizan los sistemas operativos actuales.
+
+El modo real pertenece a la arquitectura de los primeros procesadores x86 y carece de los mecanismos de protección de memoria propios del modo protegido. En este modo no existe el aislamiento habitual entre procesos: el software puede acceder a direcciones de memoria sin las restricciones que imponen los sistemas operativos modernos.
+
+Por tanto, el planteamiento del enunciado hace referencia a una arquitectura de hace décadas. Para abordar el problema de seguridad de TechNova, hay que centrarse en el aislamiento entre el **modo usuario y el modo kernel**, que es el mecanismo utilizado por los sistemas operativos actuales. En procesadores x86 modernos, esta separación se establece principalmente entre el anillo 3, donde se ejecutan las aplicaciones, y el anillo 0, donde funciona el kernel.
+
+### Funcionamiento del modo dual
+
+Los procesadores x86 disponen de cuatro niveles de privilegio, llamados anillos, del 0 al 3. En los sistemas operativos actuales se utilizan principalmente dos: el anillo 0 para el kernel y el anillo 3 para las aplicaciones.
+
+Las aplicaciones se ejecutan en modo usuario, con permisos limitados. Cuando necesitan realizar una operación que requiere privilegios, como leer un archivo, solicitan el servicio mediante una llamada al sistema. El procesador pasa temporalmente al modo kernel, donde el sistema operativo comprueba la petición y la ejecuta si está permitida. Después, devuelve el control a la aplicación.
+
+Esta separación impide que un programa pueda ejecutar directamente instrucciones privilegiadas o acceder sin restricciones a la memoria del sistema operativo y de otros procesos.
+
+### Mecanismos de protección de memoria
+
+Para proteger los sistemas de TechNova, se pueden utilizar los siguientes mecanismos:
+
+- **Instrucciones privilegiadas:** determinadas operaciones, como modificar las tablas de páginas o desactivar interrupciones, solo pueden ejecutarse con los privilegios adecuados. Si una aplicación intenta ejecutarlas desde modo usuario, el procesador genera una excepción.
+
+- **Paginación y permisos de memoria:** cada proceso dispone de un espacio de direcciones virtuales y de permisos que controlan qué memoria puede leer, escribir o ejecutar. Esto permite aislar los procesos entre sí y proteger la memoria del kernel. El bit NX, por ejemplo, permite marcar determinadas páginas como no ejecutables.
+
+- **Protecciones SMEP y SMAP:** disponibles en determinados procesadores x86, ayudan a impedir que el kernel ejecute código situado en páginas de usuario o acceda indebidamente a datos de usuario. De esta forma, reducen algunos riesgos cuando se produce un fallo en el código del kernel.
+
+### Aplicación al caso de TechNova
+
+A partir de los logs, se proponen tres medidas para reforzar la seguridad y la estabilidad del servidor.
+
+**1. Mantener el servicio con un usuario sin privilegios de administrador.**
+
+El log 4 muestra que el proceso `procesador_tx` tiene el UID 1001. Como en Linux el UID 0 corresponde a `root`, este dato confirma que el servicio no se ejecuta con esa identidad. Es una buena práctica de seguridad que TechNova ya está aplicando.
+
+La recomendación es mantener esta configuración y limitar los permisos de la cuenta a lo imprescindible para realizar su trabajo. También conviene revisar que no tenga capacidades adicionales o permisos que le permitan realizar operaciones administrativas innecesarias.
+
+**2. Revisar los controladores del sistema.**
+
+En el log 5 aparece `Tainted: O`, lo que indica que el kernel ha cargado un módulo externo al árbol oficial de Linux. Este dato no demuestra que el controlador sea defectuoso ni que carezca de firma, pero sí justifica revisar su procedencia, compatibilidad y fiabilidad.
+
+El fallo del controlador `nova_nic` termina provocando un *kernel panic*, por lo que es importante comprobar si existe una versión estable y compatible. También se puede valorar la firma de módulos del kernel, si la plataforma lo permite, para controlar qué módulos se pueden cargar. La firma ayuda a verificar su autenticidad e integridad, aunque no garantiza que el código esté libre de errores.
+
+**3. Limitar el consumo de memoria.**
+
+El log 4 muestra que el proceso `procesador_tx` alcanza aproximadamente 15 GiB de memoria residente antes de que intervenga el mecanismo OOM killer. Esto puede deberse a un consumo excesivo o a una fuga de memoria, aunque los logs no permiten determinar la causa exacta.
+
+Se recomienda utilizar grupos de control de Linux (*cgroups*) para establecer límites de memoria al servicio. De esta forma, se reduce el riesgo de que un proceso consuma tantos recursos que perjudique al resto del sistema. Estos límites deben configurarse de acuerdo con las necesidades reales de la aplicación y no sustituyen la investigación de la causa del consumo.
+
+### Conclusión
+
+El modo real no proporciona los mecanismos de aislamiento de memoria que necesita un sistema operativo moderno. Por eso, aunque el enunciado plantea la comparación entre modo real y modo protegido, la solución relevante para TechNova consiste en reforzar la protección dentro del modo protegido o del modo largo de los procesadores actuales.
+
+En la práctica, esto implica mantener la separación entre el anillo 3, donde se ejecutan las aplicaciones, y el anillo 0, donde funciona el kernel; limitar los privilegios de los servicios; proteger los espacios de memoria; revisar los controladores y controlar el consumo de recursos.
+
+Estas medidas reducen el impacto de posibles fallos, pero no sustituyen la corrección de los errores de programación detectados en los logs.
+
 ## Conclusión general
 
 Los logs muestran varios fallos que pueden tener causas diferentes. Los logs 1, 2 y 3 son *segmentation faults* provocados por excepciones de software. En los tres casos, una instrucción del programa intenta acceder a una dirección de memoria no válida, la MMU genera un *page fault* y el kernel termina enviando la señal `SIGSEGV` al proceso afectado. Por tanto, estos fallos no están provocados por interrupciones de hardware.
