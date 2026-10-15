@@ -1,7 +1,15 @@
 # Auditoría técnica del sistema operativo de TechNova
 
 ## 1. Introducción
-(pendiente)
+
+TechNova está experimentando problemas de rendimiento y cierres inesperados en su servidor de transacciones en tiempo real. Estos fallos pueden afectar a la continuidad del servicio y dificultar que la empresa aumente su capacidad sin comprometer la estabilidad.
+
+El objetivo de esta auditoría es analizar los problemas detectados, identificar sus posibles causas y proponer una arquitectura de próxima generación que mejore el rendimiento, la estabilidad y la seguridad del sistema.
+
+El análisis se basa en un extracto de logs **simulados** del servidor `tx-node-03`, correspondientes al intervalo comprendido entre las 09:00 y las 09:05 del 15 de septiembre de 2026. Estos registros se utilizan como material de estudio para identificar fallos, plantear hipótesis y proponer medidas correctivas. Las conclusiones se limitan a la información que aportan los logs y no sustituyen una auditoría sobre un sistema real.
+
+El informe se divide en seis secciones, incluida esta introducción y las conclusiones. La sección 2 compara distintas arquitecturas de sistemas operativos; la sección 3 analiza las llamadas al sistema y el uso de interfaces POSIX; la sección 4 estudia los errores registrados, su relación con las excepciones de software y las interrupciones de hardware; y la sección 5 aborda la protección de memoria y el aislamiento entre aplicaciones y kernel. Por último, la sección 6 recoge las conclusiones, los conceptos que conviene aclarar y las prioridades de actuación.
+
 
 ## 2. Arquitectura del kernel
 
@@ -87,7 +95,29 @@ En conclusión, se recomienda mantener una interfaz POSIX para facilitar la comp
 
 
 ## 4. Diagnóstico de excepciones
-## Log 1 — 09:00:47
+
+Los registros analizados están en [logs/dmesg-tx-node-03.log](logs/dmesg-tx-node-03.log): extracto del log del kernel (`dmesg -T`) del 15 de septiembre de 2026, entre las 09:00:47 y las 09:04:58.
+
+### Cómo se leen los códigos de error
+
+En los fallos de página de x86, el número de `error` se descompone en bits:
+
+| Bit | Valor | Si vale 0 | Si vale 1 |
+|-----|-------|-----------|-----------|
+| 0 (P) | 1 | página **inexistente** (no mapeada) | página presente, pero **sin permiso** |
+| 1 (W) | 2 | **lectura** | **escritura** |
+| 2 (U) | 4 | modo **kernel** | modo **usuario** |
+
+La posición del código que falló dentro de su archivo (*offset*) se obtiene restando a la dirección `ip` la dirección base del archivo en memoria, que es el primer número entre corchetes.
+
+### Log 1 — 09:00:47
+
+**Datos:**
+
+- **Proceso o hilo:** `procesador_tx`, PID 4821 (el proceso principal).
+- **Dirección:** `0x0`.
+- **Tipo de acceso:** `error 4` = `100` → usuario · lectura · página inexistente.
+- **Dónde:** `libtx.so`, offset `0x14e10` (`0x7f3a2c1b4e10 − 0x7f3a2c1a0000`).
 
 **Hipótesis:**
 
@@ -95,7 +125,14 @@ El proceso ha intentado leer información desde la dirección `0x0`, que corresp
 
 **Recomendación:** comprobar el resultado de las reservas de memoria y asegurarse de que los punteros sean válidos antes de utilizarlos.
 
-## Log 2 — 09:01:22
+### Log 2 — 09:01:22
+
+**Datos:**
+
+- **Proceso o hilo:** `tx-worker-12`, TID 4899 (un hilo de trabajo).
+- **Dirección:** `0x18` (24 en decimal).
+- **Tipo de acceso:** `error 6` = `110` → usuario · escritura · página inexistente.
+- **Dónde:** `libtx.so`, offset `0x17a42`.
 
 **Hipótesis:**
 
@@ -103,7 +140,15 @@ El hilo `tx-worker-12` ha intentado escribir en la dirección `0x18`, situada a 
 
 **Recomendación:** comprobar los punteros antes de utilizarlos y proteger los datos compartidos entre hilos mediante mecanismos de sincronización, como los *mutex*.
 
-## Log 3 — 09:02:05
+### Log 3 — 09:02:05
+
+**Datos:**
+
+- **Proceso o hilo:** `tx-worker-47`, TID 5133.
+- **Dirección:** `0x7f1c8a7fdff8`.
+- **Tipo de acceso:** `error 6` = `110` → usuario · escritura · página inexistente.
+- **Dónde:** el propio binario `procesador_tx`, offset `0x1a3b1`.
+- **Dato clave:** `sp = 0x7f1c8a7fe000`. La dirección del fallo está exactamente **8 bytes por debajo** del puntero de pila, y `sp` está justo en un límite de página.
 
 **Hipótesis:**
 
@@ -111,7 +156,13 @@ El hilo ha intentado escribir en una dirección situada justo debajo del límite
 
 **Recomendación:** revisar las llamadas recursivas y reducir el uso de la pila. Si el tamaño actual resulta insuficiente, se puede valorar aumentarlo para los hilos de trabajo.
 
-## Log 4 — 09:03:31
+### Log 4 — 09:03:31
+
+**Datos:**
+
+- **Proceso o hilo:** `procesador_tx`, PID 5102, UID 1001.
+- **Dirección:** no aplica; no es un fallo de página.
+- **Consumo de memoria:** `total-vm` ≈ 30 GiB y `anon-rss` ≈ 15 GiB. La petición que desencadena el OOM killer es de `order=0`, es decir, una sola página.
 
 **Hipótesis:**
 
@@ -119,7 +170,15 @@ El proceso ha sido terminado por el OOM killer del kernel porque el sistema se h
 
 **Recomendación:** investigar posibles fugas de memoria, controlar el consumo del servicio y establecer límites para evitar que llegue a agotar los recursos del sistema.
 
-## Log 5 — 09:04:58
+### Log 5 — 09:04:58
+
+**Datos:**
+
+- **Proceso o hilo:** `swapper/3`, PID 0 en la CPU 3 (la tarea inactiva, interrumpida).
+- **Dirección:** `0xffffc90000a1f000` (espacio de direcciones del kernel).
+- **Tipo de acceso:** `error_code(0x0000)` → kernel (*supervisor*) · lectura · página inexistente.
+- **Dónde:** `nova_nic_rx_poll+0x4c`, en el módulo **`[nova_nic]`**, llamado desde `__napi_poll` → `net_rx_action` → `__do_softirq`, dentro de `<IRQ>`. El kernel está marcado como `Tainted: O` (módulo externo al árbol oficial).
+- **Resultado:** `Kernel panic - not syncing: Fatal exception in interrupt`.
 
 **Hipótesis:**
 
@@ -127,7 +186,16 @@ El sistema ha sufrido un *kernel panic* debido a un fallo en el controlador de r
 
 **Recomendación:** revisar la compatibilidad del controlador `nova_nic` con el kernel e intentar actualizarlo o sustituirlo por una versión estable y compatible.
 
----
+### Conclusión del diagnóstico
+
+Los logs muestran varios fallos que pueden tener causas diferentes. Los logs 1, 2 y 3 son *segmentation faults* provocados por excepciones de software. En los tres casos, una instrucción del programa intenta acceder a una dirección de memoria no válida, la MMU genera un *page fault* y el kernel termina enviando la señal `SIGSEGV` al proceso afectado. Por tanto, estos fallos no están provocados por interrupciones de hardware.
+
+El log 4 tampoco es un *segmentation fault*: el OOM killer ha terminado el proceso mediante `SIGKILL` porque el sistema se estaba quedando sin memoria. Por su parte, el log 5 es el único relacionado con una interrupción de hardware, ya que el fallo se produce en el controlador de red mientras se procesa la recepción de paquetes. En este caso no se envía una señal a un proceso, sino que se produce un *kernel panic* que provoca la caída del sistema.
+
+El log 5 también puede considerarse una pista falsa, porque ocurre durante la misma franja horaria y es el fallo más grave. Sin embargo, no hay motivos suficientes para afirmar que haya provocado los segfaults anteriores. Estos se producen en el código de `libtx.so` y en el propio programa, mientras que el *kernel panic* tiene su origen en el controlador `nova_nic`. La coincidencia temporal no demuestra que exista una relación causal entre ellos.
+
+En conclusión, la auditoría apunta a problemas en la gestión de punteros y memoria, un posible desbordamiento de pila, un agotamiento de memoria y un fallo en el controlador de red. La prioridad es investigar el *kernel panic*, ya que afecta a todo el servidor, sin dejar de corregir los errores del programa y revisar su consumo de memoria.
+
 
 ## 5. Protección de memoria y modo dual
 
@@ -187,12 +255,51 @@ En la práctica, esto implica mantener la separación entre el anillo 3, donde s
 
 Estas medidas reducen el impacto de posibles fallos, pero no sustituyen la corrección de los errores de programación detectados en los logs.
 
-## Conclusión general
 
-Los logs muestran varios fallos que pueden tener causas diferentes. Los logs 1, 2 y 3 son *segmentation faults* provocados por excepciones de software. En los tres casos, una instrucción del programa intenta acceder a una dirección de memoria no válida, la MMU genera un *page fault* y el kernel termina enviando la señal `SIGSEGV` al proceso afectado. Por tanto, estos fallos no están provocados por interrupciones de hardware.
+## 6. Conclusiones
 
-El log 4 tampoco es un *segmentation fault*: el OOM killer ha terminado el proceso mediante `SIGKILL` porque el sistema se estaba quedando sin memoria. Por su parte, el log 5 es el único relacionado con una interrupción de hardware, ya que el fallo se produce en el controlador de red mientras se procesa la recepción de paquetes. En este caso no se envía una señal a un proceso, sino que se produce un *kernel panic* que provoca la caída del sistema.
+### 6.1. Respuesta a los desafíos de la auditoría
 
-El log 5 también puede considerarse una pista falsa, porque ocurre durante la misma franja horaria y es el fallo más grave. Sin embargo, no hay motivos suficientes para afirmar que haya provocado los segfaults anteriores. Estos se producen en el código de `libtx.so` y en el propio programa, mientras que el *kernel panic* tiene su origen en el controlador `nova_nic`. La coincidencia temporal no demuestra que exista una relación causal entre ellos.
+**Arquitectura del sistema operativo.** Se recomienda una arquitectura híbrida como objetivo para TechNova, buscando un equilibrio entre rendimiento, estabilidad y aislamiento. La migración debe planificarse cuando el servicio esté estabilizado, después de corregir los errores de memoria y revisar el controlador `nova_nic`. Cambiar de arquitectura no garantiza por sí solo que desaparezcan los fallos.
 
-En conclusión, la auditoría apunta a problemas en la gestión de punteros y memoria, un posible desbordamiento de pila, un agotamiento de memoria y un fallo en el controlador de red. La prioridad es investigar el *kernel panic*, ya que afecta a todo el servidor, sin dejar de corregir los errores del programa y revisar su consumo de memoria.
+**Llamadas al sistema e interfaz POSIX.** Se recomienda utilizar una interfaz basada en el estándar POSIX para facilitar la portabilidad entre sistemas operativos compatibles. Sobre esa base, se pueden aplicar optimizaciones específicas de Linux cuando las mediciones justifiquen su uso, como `io_uring` o `sendfile()`, que no forman parte de POSIX. También se propone utilizar herramientas como `strace` y `perf` para localizar operaciones costosas y cuellos de botella antes de modificar la aplicación.
+
+**Señales e interrupciones.** Los tres *segmentation faults* registrados son consecuencia de excepciones de software provocadas por accesos inválidos a memoria realizados por el propio programa. El fallo relacionado con una interrupción se encuentra en el log 5: el controlador de red `nova_nic` falla mientras se ejecuta código del kernel en contexto de interrupción y provoca un *kernel panic*. Este último incidente no es un *segmentation fault* de una aplicación. La proximidad temporal de los registros no demuestra que ambos tipos de fallo tengan una causa común.
+
+**Protección de memoria.** Se recomienda mantener los servicios con los mínimos privilegios necesarios, reforzar el aislamiento entre procesos y kernel, revisar los controladores y establecer límites de consumo de memoria. Estas medidas reducen el impacto de los fallos y mejoran la seguridad, pero no sustituyen la corrección de los errores de programación.
+
+### 6.2. Mitos y conceptos que conviene aclarar
+
+La auditoría permite corregir varias ideas que podrían conducir a decisiones técnicas equivocadas:
+
+- **Un kernel monolítico no es necesariamente obsoleto ni poco fiable.** Linux utiliza un kernel monolítico modular. Su estabilidad depende, entre otros factores, de la calidad del código, los controladores y la configuración.
+
+- **POSIX no acelera las aplicaciones por sí mismo.** Su función principal es definir interfaces y comportamientos comunes que facilitan la portabilidad. El rendimiento depende de cómo se utilicen esas interfaces y de la implementación del sistema.
+
+- **El aislamiento de los sistemas actuales no se diseña entre modo real y modo protegido.** La protección relevante se establece entre las aplicaciones en modo usuario y el kernel, mediante los niveles de privilegio y los mecanismos de protección de memoria.
+
+- **Los errores de segmentación no son, por sí mismos, fallos de interrupciones de hardware.** En los tres primeros registros, el procesador detecta accesos inválidos a memoria y el sistema operativo termina los procesos afectados. Que el fallo del controlador aparezca unos minutos después no demuestra que ambos problemas tengan la misma causa.
+
+- **Cambiar la arquitectura no corrige los errores de programación.** Los accesos inválidos a memoria y el consumo excesivo de recursos deben investigarse y corregirse en la aplicación, independientemente de la arquitectura elegida.
+
+Estas aclaraciones ayudan a que las decisiones de TechNova se basen en las causas probables de los problemas y no en interpretaciones incorrectas de los registros.
+
+### 6.3. Hoja de ruta y prioridades
+
+Se recomienda abordar las mejoras en el siguiente orden:
+
+1. **Revisar el controlador `nova_nic`.** Investigar el *kernel panic*, comprobar la versión y la compatibilidad del módulo y valorar su sustitución por una versión estable. Es la prioridad más alta porque el fallo registrado provoca la caída completa del sistema.
+
+2. **Corregir los errores de memoria de la aplicación.** Revisar los puntos identificados en `libtx.so` y `procesador_tx`, comprobar los punteros y las reservas de memoria, investigar posibles condiciones de carrera y analizar el uso de la pila de los hilos.
+
+3. **Investigar el consumo de memoria.** Determinar por qué el proceso alcanza aproximadamente 15 GiB de memoria residente, comprobar si existe una fuga y establecer límites adecuados mediante `cgroups`.
+
+4. **Medir el rendimiento de las llamadas al sistema.** Utilizar `strace` y `perf` para identificar operaciones costosas y cuellos de botella. Aplicar optimizaciones únicamente cuando las mediciones justifiquen su uso y priorizar las interfaces POSIX para mantener la portabilidad.
+
+5. **Planificar la evolución de la arquitectura.** Una vez estabilizado el servicio, avanzar hacia la arquitectura híbrida recomendada, comparando las alternativas disponibles según el rendimiento, la compatibilidad, el aislamiento, el mantenimiento y el coste de migración. La decisión debe apoyarse en pruebas y requisitos concretos.
+
+### Conclusión final
+
+Los registros muestran problemas de distinta naturaleza que requieren soluciones específicas. El fallo del controlador es el incidente más grave por sus consecuencias sobre el sistema completo, mientras que los errores de memoria y el consumo excesivo de recursos deben corregirse en la aplicación.
+
+La recomendación es estabilizar primero el servicio, medir después el rendimiento y, con esa información, planificar la evolución hacia una arquitectura híbrida. Este orden permite reducir los riesgos inmediatos y preparar el sistema para crecer sin asumir los costes de una migración antes de tiempo.
